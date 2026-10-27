@@ -1,0 +1,393 @@
+---
+title: "thesis_glm_sibling_design"
+author: "Tauras Lu"
+date: "2026-02-24"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(haven)
+library(tableone)
+library(fixest)
+library(broom)
+library(tableone)
+library(EValue)
+library(MatchIt)
+setwd("/Users/tauras/Desktop/data/default")
+library(tinytex)
+```
+
+## R Markdown
+
+```{r}
+data <- read_csv("clean_data.csv")
+final_data2 <- read.table("final_data2.dat")
+
+
+missing_summary <- data.frame(
+  variable = colnames(data),
+  n_missing = colSums(is.na(data)),
+  pct_missing = round(colSums(is.na(data)) / nrow(data) * 100, 2)
+)
+print(missing_summary)
+
+```
+
+```{r}
+
+clean_data2 <- data %>% 
+  select(
+    CPUBID_XRND,
+    MPUBID_XRND,
+    CRACE_XRND,
+    CSEX_XRND,
+    CYRB_XRND,
+    PRE0010_XRND,      
+    PRE0012_XRND,     
+    PST0002_XRND,      
+    PST0009_XRND,      
+    PST0010_XRND,      
+    PST0011_XRND,      
+    SAMPLE_RACE_78SCRN,
+    `AFQT-3_1981`
+  )
+
+colSums(is.na(clean_data2))
+analysis_data <- clean_data2 %>%
+  filter(
+    !is.na(PRE0012_XRND),   # exposure
+    !is.na(PST0009_XRND)    # outcome
+  )
+
+cat("Original rows:", nrow(clean_data2), "\n")
+cat("After removing NA in exposure/outcome:", nrow(analysis_data), "\n")
+
+
+
+```
+
+```{r}
+colSums(is.na(analysis_data))
+
+sum(complete.cases(analysis_data))
+
+
+```
+
+```{r}
+# 
+final_data <- analysis_data %>%
+  filter(complete.cases(.))
+
+# 
+cat("Final sample size:", nrow(final_data), "\n")
+cat("Variables:", ncol(final_data), "\n")
+
+# 
+cat("\nMothers:", n_distinct(final_data$MPUBID_XRND), "\n")
+
+# Discordant families
+smoking_var <- final_data %>%
+  group_by(MPUBID_XRND) %>%
+  filter(n() > 1) %>%
+  summarise(smoke_var = n_distinct(PRE0012_XRND)) %>%
+  filter(smoke_var > 1)
+
+cat("Discordant families:", nrow(smoking_var), "\n")
+
+write.csv(final_data, "final_data.csv", row.names = FALSE)
+```
+
+```{r}
+final_data2 %>%
+  filter(!is.na(PST0009_XRND) & !is.na(PRE0012_XRND)) %>%
+  group_by(MPUBID_XRND) %>%
+  filter(n() >= 2) %>%
+  ungroup() %>%
+  summarise(
+    n_observations = n(),
+    n_mothers = n_distinct(MPUBID_XRND)
+  )
+final_data2 <- final_data2 %>%
+  mutate(AFQT_scaled = AFQT.3_1981 / 1000)
+
+summary(final_data2$AFQT_scaled)
+
+nrow(final_data2)
+```
+
+```{r}
+
+model1 <- glm(PST0009_XRND ~ PRE0012_XRND, 
+              data = final_data2, 
+              family = gaussian())
+summary(model1)
+
+
+```
+
+```{r}
+model2 <-  glm(PST0009_XRND ~ PRE0012_XRND + CSEX_XRND + CRACE_XRND + 
+               PST0002_XRND + PRE0010_XRND + 
+              AFQT_scaled+ maternal_age, 
+              data = final_data2, 
+              family = gaussian())
+summary(model2)
+
+
+
+```
+
+```{r}
+model3 <- feols(PST0009_XRND ~ PRE0012_XRND + CSEX_XRND + CYRB_XRND | MPUBID_XRND, 
+                data = final_data2)
+summary(model3)
+
+
+```
+
+```{r}
+
+table_data <- final_data2 %>%
+  mutate(
+   
+    Smoking = factor(PRE0012_XRND, 
+                     levels = c(0, 1), 
+                     labels = c("No", "Yes")),
+    
+   
+    Child_Sex = factor(CSEX_XRND, 
+                       levels = c(1, 2), 
+                       labels = c("Male", "Female")),
+    
+    Child_Race = factor(CRACE_XRND, 
+                        levels = c(1, 2, 3), 
+                        labels = c("Hispanic", "Black", "Non-Black, Non-Hispanic")),
+    
+    Alcohol_Use = factor(PRE0010_XRND, 
+                         levels = c(0, 1), 
+                         labels = c("No", "Yes")),
+    
+    
+    Birth_Year = CYRB_XRND,
+    Gestational_Weeks = PST0002_XRND,
+    Birth_Weight_oz = PST0009_XRND,
+    AFQT_Score = `AFQT.3_1981`,
+    maternal_age = maternal_age
+  )
+
+
+vars <- c("Child_Sex", "Child_Race", "Birth_Year", 
+          "Alcohol_Use", "Gestational_Weeks", "Birth_Weight_oz", 
+          "AFQT_Score","maternal_age")
+
+factorVars <- c("Child_Sex", "Child_Race", "Alcohol_Use")
+
+table1 <- CreateTableOne(vars = vars, 
+                         strata = "Smoking",
+                         factorVars = factorVars,
+                         data = table_data)
+
+print(table1, smd = TRUE, showAllLevels = TRUE)
+
+
+
+```
+
+
+```{r}
+# Model 3 结果
+effect <- 2.965  # 效应绝对值 (oz)
+se_effect <- 0.995  # 标准误
+sd_outcome <- 13.1  # RMSE 作为 outcome SD 
+
+# 计算 E-value (需要提供 sd 参数)
+evalues.OLS(est = effect, se = se_effect, sd = sd_outcome)
+```
+
+```{r}
+
+
+table1_data <- final_data2 %>%
+  mutate(
+    Prenatal_Smoking = factor(PRE0012_XRND, 
+                               levels = c(0, 1), 
+                               labels = c("No", "Yes")),
+    Child_Sex = factor(CSEX_XRND, 
+                       levels = c(1, 2), 
+                       labels = c("Male", "Female")),
+    Child_Race = factor(CRACE_XRND, 
+                        levels = c(1, 2, 3), 
+                        labels = c("Hispanic", "Black", "Non-Black Non-Hispanic")),
+    Prenatal_Alcohol = factor(PRE0010_XRND, 
+                               levels = c(0, 1), 
+                               labels = c("No", "Yes")),
+    Birth_Weight_oz  = PST0009_XRND,
+    Gestational_Weeks = PST0002_XRND,
+    Birth_Year       = CYRB_XRND,
+    AFQT_Score       = AFQT.3_1981,
+    Maternal_Age     = maternal_age
+  )
+
+vars <- c("Child_Sex", "Child_Race", "Prenatal_Alcohol",
+          "Gestational_Weeks", "Birth_Weight_oz",
+          "Birth_Year", "AFQT_Score", "Maternal_Age")
+
+factorVars <- c("Child_Sex", "Child_Race", "Prenatal_Alcohol")
+
+table1 <- CreateTableOne(
+  vars       = vars,
+  strata     = "Prenatal_Smoking",
+  factorVars = factorVars,
+  data       = table1_data,
+  addOverall = TRUE
+)
+
+print(table1, 
+      smd          = TRUE, 
+      showAllLevels = TRUE,
+      formatOptions = list(big.mark = ","))
+
+
+
+
+```
+
+```{r}
+m1_row <- tidy(model1, conf.int = TRUE) %>%
+  filter(term == "PRE0012_XRND") %>%
+  mutate(Model = "Model 1: Unadjusted",
+         Covariates = "None",
+         `Sample Size` = 8744)
+
+m2_row <- tidy(model2, conf.int = TRUE) %>%
+  filter(term == "PRE0012_XRND") %>%
+  mutate(Model = "Model 2: Multivariable Adjusted",
+         Covariates = "Child sex, race, gestational age, alcohol use, AFQT score, maternal age",
+         `Sample Size` = 8744)
+
+m3_row <- tidy(model3, conf.int = TRUE) %>%
+  filter(term == "PRE0012_XRND") %>%
+  mutate(Model = "Model 3: Sibling Fixed-Effects",
+         Covariates = "Child sex, birth year + mother fixed effects",
+         `Sample Size` = 7093)
+
+table2 <- bind_rows(m1_row, m2_row, m3_row) %>%
+  mutate(
+    Estimate = round(estimate, 3),
+    `95% CI` = paste0("(", round(conf.low, 3), ", ", round(conf.high, 3), ")"),
+    `p-value` = ifelse(p.value < 0.001, "<0.001", round(p.value, 3))
+  ) %>%
+  select(Model, Covariates, `Sample Size`, Estimate, `95% CI`, `p-value`)
+
+print(table2)
+```
+
+```{r}
+family_summary <- final_data2 %>%
+  filter(!is.na(PST0009_XRND) & !is.na(PRE0012_XRND)) %>%
+  group_by(MPUBID_XRND) %>%
+  filter(n() >= 2) %>%
+  summarise(
+    n_children = n(),
+    discordant = n_distinct(PRE0012_XRND) > 1
+  ) %>%
+  ungroup()
+
+# 家庭规模分布
+table(family_summary$n_children)
+
+# discordant情况
+cat("Discordant families:", sum(family_summary$discordant), "\n")
+cat("Concordant families:", sum(!family_summary$discordant), "\n")
+cat("Total families:", nrow(family_summary), "\n")
+cat("Discordant %:", round(mean(family_summary$discordant)*100, 1), "%\n")
+
+```
+
+```{r}
+family_table <- family_summary %>%
+  mutate(
+    Family_Size = case_when(
+      n_children == 2 ~ "2 children",
+      n_children == 3 ~ "3 children",
+      n_children == 4 ~ "4 children",
+      n_children >= 5 ~ "5+ children"
+    )
+  ) %>%
+  group_by(Family_Size) %>%
+  summarise(
+    N_Families = n(),
+    N_Discordant = sum(discordant),
+    Pct_Discordant = round(mean(discordant) * 100, 1)
+  ) %>%
+  ungroup() %>%
+  mutate(Pct_Families = round(N_Families / sum(N_Families) * 100, 1)) %>%
+  select(Family_Size, N_Families, Pct_Families, N_Discordant, Pct_Discordant)
+
+# 加Total行
+total_row <- data.frame(
+  Family_Size = "Total",
+  N_Families = nrow(family_summary),
+  Pct_Families = 100.0,
+  N_Discordant = sum(family_summary$discordant),
+  Pct_Discordant = round(mean(family_summary$discordant) * 100, 1)
+)
+
+table4 <- bind_rows(family_table, total_row)
+print(table4)
+```
+
+```{r}
+
+
+# Step 1: Propensity Score Matching
+psm_match <- matchit(
+  PRE0012_XRND ~ CSEX_XRND + CRACE_XRND + PST0002_XRND + 
+                 PRE0010_XRND + AFQT_scaled + maternal_age,
+  data = final_data2,
+  method = "nearest",
+  distance = "logit",
+  ratio = 1,
+  replace = FALSE
+)
+
+# Step 2: 查看matching质量
+summary(psm_match)
+
+# Step 3: 提取matched数据
+matched_data <- match.data(psm_match)
+
+# Step 4: 检查匹配后SMD
+library(tableone)
+vars <- c("CSEX_XRND", "CRACE_XRND", "PST0002_XRND", 
+          "PRE0010_XRND", "AFQT_scaled", "maternal_age")
+
+table_before <- CreateTableOne(vars = vars, 
+                                strata = "PRE0012_XRND", 
+                                data = final_data2)
+
+table_after <- CreateTableOne(vars = vars, 
+                               strata = "PRE0012_XRND", 
+                               data = matched_data)
+
+print(table_before, smd = TRUE)
+print(table_after, smd = TRUE)
+
+# Step 5: 在matched sample上跑回归
+model_psm <- lm(PST0009_XRND ~ PRE0012_XRND + CSEX_XRND + CRACE_XRND + 
+                PST0002_XRND + PRE0010_XRND + AFQT_scaled + maternal_age,
+                data = matched_data,
+                weights = matched_data$weights)
+
+summary(model_psm)
+
+# Step 6: 对比三个estimate
+cat("\n=== Sensitivity Analysis Summary ===\n")
+cat("Model 2 (Multivariable):  ", round(coef(model2)["PRE0012_XRND"], 3), "\n")
+cat("PSM (Matched sample):     ", round(coef(model_psm)["PRE0012_XRND"], 3), "\n")
+
+```
+
